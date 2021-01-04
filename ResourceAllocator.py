@@ -81,9 +81,9 @@ class LargeScaleFadingOnlyAllocator():
         return alpha_mB, alpha_k, alpha_kB, alpha_mk
 
 
-    def run_allocation(self, d_avg, obj="MaxSum"):
+    def run_allocation(self, v, obj="MaxSum"):
         # sample vehicles
-        indCUE, indDUETransmitter, indDUEReceiver, vehPos = self.vehicle_generator.generate_CUE_and_DUE(2.5*d_avg/3.6, self.numCUE, self.numDUE)
+        indCUE, indDUETransmitter, indDUEReceiver, vehPos = self.vehicle_generator.generate_CUE_and_DUE(2.5*v/3.6, self.numCUE, self.numDUE)
 
         # random large-scale fading generation
         alpha_mB, alpha_k, alpha_kB, alpha_mk = self.sample_channel(indCUE, indDUETransmitter, indDUEReceiver, vehPos)
@@ -229,10 +229,6 @@ class DelayedCSIAllocator():
 
 
     def compute_opt_power(self, tol, alpha_k, alpha_mk, h_k, h_mk, epsilon_k, epsilon_mk):
-        alpha_k = 1.9564e-5
-        alpha_mk = 2.9124e-11
-        h_k = np.array([-1.2357, 0.4734])
-        h_mk = np.array([-0.5180, -0.7021])
         norm_h_k = np.linalg.norm(h_k)**2
         norm_h_mk = np.linalg.norm(h_mk)**2
         den0 = alpha_mk * (1 - epsilon_mk**2) * (1/self.p0 - 1) * (epsilon_k**2) * norm_h_k -\

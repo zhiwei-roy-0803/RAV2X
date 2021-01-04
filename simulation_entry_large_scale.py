@@ -6,7 +6,8 @@ import os
 # simulation parameter
 max_run = 1000
 # Hyper-parameter configuration
-config = {"dB_Pd_max": 23,
+config = {
+    "dB_Pd_max": 23,
           "dB_Pc_max": 23,
           "stdV2V": 3,
           "stdV2I": 8,
@@ -26,7 +27,8 @@ config = {"dB_Pd_max": 23,
           "p0": 0.001,
           "dB_sigma2": -114,
           "numDUE": 20,
-          "numCUE": 20}
+          "numCUE": 20
+}
 
 def run_different_speed(obj):
     speeds = np.arange(60, 150, 10)

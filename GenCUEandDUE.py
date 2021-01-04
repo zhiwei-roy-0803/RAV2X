@@ -1,7 +1,6 @@
 import numpy as np
 
 class VehicleGenerator():
-
     def __init__(self, d0, lanewidth, numLane, distBStoHwy):
         self.d0 = d0
         self.lanewidth = lanewidth

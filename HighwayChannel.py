@@ -1,7 +1,6 @@
 import numpy as np
 
 class HwyChannelLargeScaleFadingGenerator():
-
     def __init__(self, stdV2I, stdV2V, vehHeight, bsHeight, freq, vehAntGain, bsAntGain, bsNoiseFigure, vehNoiseFigure):
         self.stdV2I = stdV2I
         self.stdV2V = stdV2V
