@@ -51,7 +51,7 @@ class RLHighWayEnvironment():
         self.active_links = np.ones(self.numDUE, dtype="bool")
         self.individual_time_limit = self.time_slow_fading * np.ones(self.numDUE)
         self.demand = self.demand_size * np.ones(self.numDUE)
-
+        self.lambdda = config["lambdda"]
         self.V2V_interference = np.zeros((self.numDUE, self.numDUE, self.numCUE))
 
 
@@ -226,13 +226,23 @@ class RLHighWayEnvironment():
 
 
     def get_state(self, idx, epsilon=0.02, ind_episode=1.):
+        mu_fast_fading = -2.5126976697433587
+        std_fast_fading = 5.591597454173695
         V2I_fast = self.V2I_channel_with_fast_dB - self.V2I_channel_dB
         V2V_fast = self.V2V_V2V_interference_channel_with_fast_dB[:, idx, :] - self.V2V_V2V_interference_channel_dB[:, idx].reshape((self.numDUE, 1))
+        V2I_fast = (V2I_fast + 10) / 35 # normalize the fast fading component of V2I links
+        V2V_fast = (V2V_fast + 10) / 35 # normalize the fast fading component of V2V links
+
         V2V_interference = self.V2V_interference[idx, idx, :]
+        V2V_interference = (V2V_interference - 60)/60
+
         V2I_slow = self.V2I_channel_dB
         V2V_slow = self.V2V_V2V_interference_channel_dB[:, idx]
-        load_remaining = [self.demand[idx]]
-        time_remaining = [self.individual_time_limit[idx]]
+        V2I_slow = (V2I_slow - 60) / 60
+        V2V_slow = (V2V_slow - 60) / 60
+
+        load_remaining = [self.demand[idx]/self.demand_size]
+        time_remaining = [self.individual_time_limit[idx]/self.time_slow_fading]
         # assemble the state vector
         state = np.concatenate((V2I_slow, V2V_slow, np.reshape(V2I_fast, -1), np.reshape(V2V_fast, -1), V2V_interference,
                                 time_remaining, load_remaining, np.asarray([epsilon, ind_episode])))
@@ -281,6 +291,7 @@ class RLHighWayEnvironment():
         '''
         RB_selection = action[:, 0]
         power_selection = action[:, 1]
+        reward_scaling_factor = 0.01  # RL trick for scaling reward signal to accelerate convergence
         # compute V2I rate
         V2I_interference = np.zeros(self.numCUE)
         for i in range(self.numDUE):
@@ -315,54 +326,15 @@ class RLHighWayEnvironment():
                     power_k2i = self.power_list_V2V_dB[power_dB_k] + self.V2V_V2V_interference_channel_with_fast_dB[k, i, RB_k] + 2*self.vehAntGaindB + self.vehNoisedB
                     V2V_interference[k] += 10**(power_k2i/10)
         V2V_interference += self.sig2
-        V2V_rate = np.log2(1 + np.divide(V2V_signal, V2V_interference))
+        V2V_rate = np.log2(1 + np.divide(V2V_signal, V2V_interference)) * reward_scaling_factor
         self.demand -= V2V_rate * self.time_fast_fading * self.bandwidth
         self.demand[self.demand < 0] = 0
         self.individual_time_limit -= self.individual_time_limit
         # reward_V2V = V2V_rate/10
-        reward_V2V = np.zeros_like(V2V_rate)
+        reward_V2V = V2V_rate*reward_scaling_factor
         reward_V2V[self.demand <= 0] = 1
         self.active_links[self.demand <= 0] = 0
         # compute combined reward
-        lambdda = 0.9
-        reward = lambdda * np.sum(V2I_rate) + (1 - lambdda) * np.sum(reward_V2V)
+        reward = self.lambdda * np.sum(V2I_rate) + (1 - self.lambdda) * np.sum(reward_V2V)
         return reward
 
-if __name__ == "__main__":
-    config_environment = {
-        "powerV2VdB": [23, 10, 5, 0],
-        "powerV2I": 23,
-        "stdV2V": 3,
-        "stdV2I": 8,
-        "freq": 2,
-        "radius": 500,
-        "bsHgt": 25,
-        "disBstoHwy": 35,
-        "bsAntGaindB": 8,
-        "bsNoisedB": 5,
-        "vehHgt": 1.5,
-        "vehAntGaindB": 3,
-        "vehNoisedB": 9,
-        "numLane": 6,
-        "laneWidth": 4,
-        "dB_gamma0": 5,
-        "backgroundNoisedB": -114,
-        "numDUE": 4,
-        "numCUE": 2,
-        "time_fast_fading": 0.001,
-        "time_slow_fading": 0.1,
-        "bandwidth": int(1e6),
-        "demand": int((4 * 190 + 300) * 8 * 2),
-        "speed": 70
-    }
-    env = RLHighWayEnvironment(config_environment)
-    env.init_simulation()
-    action = np.array([
-        [0, 3],
-        [0, 3],
-        [1, 3],
-        [1, 3]
-    ])
-    env.compute_reward(action)
-    env.compute_V2V_interference(action)
-    state = env.get_state(0)

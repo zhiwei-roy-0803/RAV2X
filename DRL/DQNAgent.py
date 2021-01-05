@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from torch.optim.rmsprop import RMSprop
+from torch.optim.lr_scheduler import StepLR
 from .ReplayMemory import ReplayMemory
 import random
 import numpy as np
@@ -48,12 +49,13 @@ class DQNAgent():
     def __init__(self, config, n_Feature, n_Action):
         self.device = config["device"]
         self.lr = config["lr"]
+        self.lr_step_size = config["lr_decay_step"]
+        self.lr_gamma = config["lr_decay_gamma"]
+        self.lr_last_epoch = config["lr_last_epoch"]
         self.target_net_update_freq = config["target_net_update_freq"]
         self.experience_replay_size = config["experience_replay_size"]
         self.batch_size = config["batch_size"]
-
         self.discount = config["discount"]
-
 
         self.num_feature = n_Feature
         self.num_action = n_Action
@@ -67,6 +69,7 @@ class DQNAgent():
         self.target_net.apply(weigth_init)
         self.target_net.load_state_dict(self.predict_net.state_dict())
         self.optimizer = RMSprop(self.predict_net.parameters(), lr=self.lr, momentum=0.95, eps=0.01)
+        self.lr_schduler = StepLR(optimizer=self.optimizer, step_size=self.lr_step_size, gamma=self.lr_gamma)
         # self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         # initialize the experience replay buffer
         self.memory = ReplayMemory(entry_size=n_Feature, memory_size=self.experience_replay_size, batch_size=self.batch_size)
@@ -81,7 +84,9 @@ class DQNAgent():
         return batch_state, batch_action, batch_reward, batch_next_state
 
 
-    def update_dqn(self, time_step):
+    def update_dqn(self, episode=0):
+        self.predict_net.train()
+        self.target_net.train()
         batch_state, batch_action, batch_reward, batch_next_state = self.prepare_minibatch()
         current_state_values = self.predict_net(batch_state).gather(1, batch_action).squeeze()
         next_state_values = self.target_net(batch_next_state).max(1)[0].detach()
@@ -93,13 +98,17 @@ class DQNAgent():
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        # self.lr_schduler.step()
         # update target network
-        if time_step % self.target_net_update_freq == self.target_net_update_freq - 1:
+        if episode // self.target_net_update_freq == 0:
             self.target_net.load_state_dict(self.predict_net.state_dict())
         return loss.item()
 
 
-    def update_double_dqn(self, time_step):
+    def update_double_dqn(self, episode=0):
+        # switch to train mode so that BN can work properly
+        self.predict_net.train()
+        # self.target_net.train()
         batch_state, batch_action, batch_reward, batch_next_state = self.prepare_minibatch()
         current_state_values = self.predict_net(batch_state).gather(1, batch_action).squeeze()
         pred_action = self.predict_net(batch_next_state).argmax(1).unsqueeze(1)
@@ -112,18 +121,20 @@ class DQNAgent():
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        self.lr_schduler.step()
         # update target network
-        if time_step % self.target_net_update_freq == self.target_net_update_freq - 1:
+        if episode % self.target_net_update_freq == self.target_net_update_freq - 1:
             self.target_net.load_state_dict(self.predict_net.state_dict())
         return loss.item()
 
 
-    def get_action(self, state, epsilon, is_static_policy=False):
+    def get_action(self, state, epsilon, learned_policy=True):
         with torch.no_grad():
             rand = random.random()
-            if rand < epsilon or not is_static_policy:
+            if rand < epsilon or learned_policy == False:
                 return np.random.randint(0, self.num_action)
             else:
+                self.predict_net.eval() # switch to eval mode so that BN can work properly
                 X = torch.tensor([state], device=self.device, dtype=torch.float)
                 a = self.predict_net.forward(X).squeeze().argmax().item()
                 return a

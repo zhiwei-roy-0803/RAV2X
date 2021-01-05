@@ -1,12 +1,15 @@
 from __future__ import division, print_function
-import scipy.io
 import numpy as np
 import torch
 from RLEnvironment import RLHighWayEnvironment
-import os
 from DRL.DQNAgent import DQNAgent
+from torchtracer import Tracer
+from torchtracer.data import Config
+from torchtracer.data import Model
+import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+import os
+import shutil
 # RL method applied in simulation
 RL_method = "DoubleDQN"
 # ################## SETTINGS ######################
@@ -29,74 +32,90 @@ config_environment = {
     "dB_gamma0": 5,
     "backgroundNoisedB": -114,
     "numDUE": 4,
-    "numCUE": 2,
+    "numCUE": 4,
     "time_fast_fading": 0.001,
     "time_slow_fading": 0.1,
     "bandwidth": int(1e6),
     "demand": int((4 * 190 + 300) * 8 * 2),
-    "speed": 70
+    "speed": 70,
+    "lambdda": 0.5
     }
 config_agent = {
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    "discount": 0.5,
-    "target_net_update_freq": 400,
+    "discount": 0.9,
+    "target_net_update_freq": 1,
     "experience_replay_size": 1000000,
     "batch_size": 2000,
-    "lr": 0.001
+    "lr": 1e-3,
+    "lr_decay_step": 500,
+    "lr_decay_gamma": 0.95,
+    "lr_last_epoch": -1,
+    "n_episode": 12000,
+    "n_step_per_episode": 100,
+    "epsilon_final": 0.02,
+    "epsilon_anneal_length": int(10000*0.7)
 }
+# build a torch experiment tracer
+experiment_name = "Discount_0.9"
+if os.path.isdir(os.path.join(os.getcwd(), "checkpoints", experiment_name)):
+    shutil.rmtree(os.path.join(os.getcwd(), "checkpoints", experiment_name))
+tracer = Tracer('checkpoints').attach(experiment_name)
+
 # Initialize environment simulator
 env = RLHighWayEnvironment(config_environment)
 env.init_simulation()  # initialize parameters in env
-n_episode = 4000
-n_step_per_episode = int(env.time_slow_fading/env.time_fast_fading) # 100
-epsilon_final = 0.02
-epsilon_anneal_length = 3000
-mini_batch_step = 100
+n_episode = config_agent["n_episode"]
+n_step_per_episode = config_agent["n_step_per_episode"]
+epsilon_final = config_agent["epsilon_final"]
+epsilon_anneal_length = config_agent["epsilon_anneal_length"]
 
+# initialize agents
 numRB = config_environment["numCUE"]
 numDUE = config_environment["numDUE"]
 n_feature = len(env.get_state(0))
 n_action = numRB * len(config_environment["powerV2VdB"])
 agents = []
-# initialize agents
 for ind_agent in range(config_environment["numDUE"]):
     print("Initializing {:s} agent {:d}".format(RL_method, ind_agent))
     agent = DQNAgent(config_agent, n_Feature=n_feature, n_Action=n_action)
     agents.append(agent)
+
+# all optimizer to the global configuration, obtain global configuration and save it in the config.json
+config_agent["optimizer"] = agents[0].optimizer
+config = dict(config_environment, **config_agent)
+tracer.store(Config(config))
+
 #------------------------- Training -----------------------------
 record_reward = np.zeros(n_episode)
 record_loss = np.zeros(n_episode)
-
 pbar = tqdm(range(n_episode))
 for i_episode in pbar:
     if i_episode < epsilon_anneal_length:
         epsilon = 1 - i_episode * (1 - epsilon_final) / (epsilon_anneal_length - 1)  # epsilon decreases over each episode
     else:
         epsilon = epsilon_final
-
     # update the vehicle position after each episode
-    env.update_vehicle_position() # update vehicle position
-    env.update_V2VReceiver() # update the receiver for each V2V link
-    env.update_channels_slow() # update channel slow fading
-    env.update_channels_fast() # update channel fast fading
-
+    if i_episode % 1 == 0:
+        env.update_vehicle_position() # update vehicle position
+        env.update_V2VReceiver() # update the receiver for each V2V link
+        env.update_channels_slow() # update channel slow fading
+        env.update_channels_fast() # update channel fast fading
+    # env.init_simulation()
     # reset the task buffer for each agent after each episode
     env.demand = env.demand_size * np.ones(numDUE)
     env.individual_time_limit = env.time_slow_fading * np.ones(numDUE)
     env.active_links = np.ones(numDUE, dtype='bool')
-
     episode_reward = np.zeros(n_step_per_episode)
     episode_loss = []
     # A episode is a transmission task in 100 ms, V2V agents need to make decision every 1 ms
     for i_step in range(n_step_per_episode):
-        time_step = i_episode*n_step_per_episode + i_step
         state_old_all = []
         action_all = []
         action_all_training = np.zeros([numDUE, 2], dtype='int32')
         for i in range(numDUE):
             state = env.get_state(i, epsilon, i_episode/(n_episode-1))
             state_old_all.append(state)
-            action = agents[i].get_action(state, epsilon, is_static_policy=False)
+            action = agents[i].get_action(state, epsilon, learned_policy=True)
             action_all.append(action)
             action_all_training[i, 0] = action % numRB  # chosen RB
             action_all_training[i, 1] = action // numRB # power level
@@ -114,33 +133,35 @@ for i_episode in pbar:
 
     # training agents after finishing one episode
     for i in range(numDUE):
-        loss_val_batch = agents[i].update_dqn(time_step)
+        loss_val_batch = agents[i].update_double_dqn(i_episode)
         episode_loss.append(loss_val_batch)
 
     record_reward[i_episode] = np.mean(episode_reward)
     record_loss[i_episode] = np.mean(episode_loss)
-    pbar.set_description("loss = {:f}, reward = {:f}".format(record_loss[i_episode], record_reward[i_episode]))
+    tracer.log(msg="Episode #{:04d}, TD Loss : {:.3f}".format(i_episode, record_loss[i_episode]), file="loss")
+    tracer.log(msg="Episode #{:04d}, Reward : {:.3f}".format(i_episode, record_loss[i_episode]), file="reward")
+    pbar.set_description("Loss = {:.3f}, Reward = {:.3f}".format(record_loss[i_episode], record_reward[i_episode]))
+
 
 print('Training Done. Saving models and training statistics')
-model_dir = os.path.join(os.getcwd(), "model", "marl", RL_method)
-if not os.path.isdir(model_dir):
-    os.makedirs(model_dir)
 for i in range(env.numDUE):
     agent = agents[i]
-    torch.save(agent.predict_net.state_dict(), os.path.join(model_dir, "V2V_{:d}.pth".format(i)))
+    tracer.store(Model(agent.predict_net), file="V2V_{:d}.pth".format(i))
 
-reward_dir = os.path.join(os.getcwd(), "reward", "marl", RL_method)
-if not os.path.isdir(reward_dir):
-    os.makedirs(reward_dir)
-reward_path = os.path.join(reward_dir, "V2V_{:d}.mat".format(env.numDUE))
-scipy.io.savemat(reward_path, {'reward': record_reward})
+# Plot training loss and reward curve
+plt.figure(dpi=300)
+plt.plot(np.arange(1, n_episode + 1), record_loss, color='r', linestyle='-')
+plt.xlabel("Episode")
+plt.ylabel("TD Error (Loss)")
+plt.grid()
+tracer.store(plt.gcf(), "loss.png")
 
-loss_dir = os.path.join(os.getcwd(), "loss", "marl", RL_method)
-if not os.path.isdir(loss_dir):
-    os.makedirs(loss_dir)
-record_loss = np.asarray(record_loss)
-loss_path = os.path.join(loss_dir, "V2V_{:d}.mat".format(env.numDUE))
-scipy.io.savemat(loss_path, {'train_loss': record_loss})
+plt.figure(dpi=300)
+plt.plot(np.arange(1, n_episode + 1), record_reward, color='r', linestyle='-')
+plt.xlabel("Episode")
+plt.ylabel("Reward")
+plt.grid()
+tracer.store(plt.gcf(), "reward.png")
 
 
 
