@@ -226,8 +226,8 @@ class RLHighWayEnvironment():
 
 
     def get_state(self, idx, epsilon=0.02, ind_episode=1.):
-        mu_fast_fading = -2.5126976697433587
-        std_fast_fading = 5.591597454173695
+        # mu_fast_fading = -2.5126976697433587
+        # std_fast_fading = 5.591597454173695
         V2I_fast = self.V2I_channel_with_fast_dB - self.V2I_channel_dB
         V2V_fast = self.V2V_V2V_interference_channel_with_fast_dB[:, idx, :] - self.V2V_V2V_interference_channel_dB[:, idx].reshape((self.numDUE, 1))
         V2I_fast = (V2I_fast + 10) / 35 # normalize the fast fading component of V2I links
@@ -291,7 +291,8 @@ class RLHighWayEnvironment():
         '''
         RB_selection = action[:, 0]
         power_selection = action[:, 1]
-        reward_scaling_factor = 0.01  # RL trick for scaling reward signal to accelerate convergence
+        reward_scaling_factor = 0.1  # RL trick for scaling reward signal to accelerate convergence
+
         # compute V2I rate
         V2I_interference = np.zeros(self.numCUE)
         for i in range(self.numDUE):
@@ -305,10 +306,13 @@ class RLHighWayEnvironment():
         V2I_power_dB = self.power_V2I_dB + self.V2I_channel_with_fast_dB.diagonal() + self.vehAntGaindB + self.bsAntGaindB + self.bsNoisedB
         V2I_power = 10**(V2I_power_dB/10)
         V2I_rate = np.log2(1 + np.divide(V2I_power, V2I_interference))
+
         # compute V2V rate
         V2V_interference = np.zeros(self.numDUE)
         V2V_signal = np.zeros(self.numDUE)
         for i in range(self.numDUE):
+            if not self.active_links[i]:
+                continue
             RB_i = RB_selection[i]
             power_dB_i = power_selection[i]
             # compute receiver signal strength for current V2V link
@@ -326,15 +330,76 @@ class RLHighWayEnvironment():
                     power_k2i = self.power_list_V2V_dB[power_dB_k] + self.V2V_V2V_interference_channel_with_fast_dB[k, i, RB_k] + 2*self.vehAntGaindB + self.vehNoisedB
                     V2V_interference[k] += 10**(power_k2i/10)
         V2V_interference += self.sig2
-        V2V_rate = np.log2(1 + np.divide(V2V_signal, V2V_interference)) * reward_scaling_factor
+        V2V_rate = np.log2(1 + np.divide(V2V_signal, V2V_interference))
+        V2V_rate[self.active_links==0] = 0 # if a link is in silent mode, it does not transmit any data
+
+        # update demand and time left for each V2V link
         self.demand -= V2V_rate * self.time_fast_fading * self.bandwidth
         self.demand[self.demand < 0] = 0
         self.individual_time_limit -= self.individual_time_limit
-        # reward_V2V = V2V_rate/10
-        reward_V2V = V2V_rate*reward_scaling_factor
-        reward_V2V[self.demand <= 0] = 1
         self.active_links[self.demand <= 0] = 0
+
+        # compute reward signal for V2I and V2V links
+        reward_V2V = V2V_rate
+        reward_V2V[self.demand <= 0] = 1
+        reward_V2V = np.sum(reward_V2V)
+        reward_V2I = np.sum(V2I_rate)
+
         # compute combined reward
-        reward = self.lambdda * np.sum(V2I_rate) + (1 - self.lambdda) * np.sum(reward_V2V)
+        reward = (self.lambdda * reward_V2I + (1 - self.lambdda) * np.sum(reward_V2V)) * reward_scaling_factor
         return reward
+
+    def compute_rate(self, action):
+        RB_selection = action[:, 0]
+        power_selection = action[:, 1]
+        # compute V2I rate
+        V2I_interference = np.zeros(self.numCUE)
+        for i in range(self.numDUE):
+            RB_i = RB_selection[i]
+            power_dB_i = power_selection[i]
+            if not self.active_links[i]:
+                continue
+            interference = self.power_list_V2V_dB[power_dB_i] + self.V2V_V2I_interference_channel_with_fast_dB[
+                i, RB_i] + self.vehAntGaindB + self.bsAntGaindB + self.bsNoisedB
+            V2I_interference[RB_i] += 10 ** (interference / 10)
+        V2I_interference += self.sig2
+        V2I_power_dB = self.power_V2I_dB + self.V2I_channel_with_fast_dB.diagonal() + self.vehAntGaindB + self.bsAntGaindB + self.bsNoisedB
+        V2I_power = 10 ** (V2I_power_dB / 10)
+        V2I_rate = np.log2(1 + np.divide(V2I_power, V2I_interference))
+
+        # compute V2V rate
+        V2V_interference = np.zeros(self.numDUE)
+        V2V_signal = np.zeros(self.numDUE)
+        for i in range(self.numDUE):
+            if not self.active_links[i]:
+                continue
+            RB_i = RB_selection[i]
+            power_dB_i = power_selection[i]
+            # compute receiver signal strength for current V2V link
+            receiver_power_dB = self.power_list_V2V_dB[power_dB_i] + self.V2V_channel_with_fast_dB[i, RB_i] + 2 * self.vehAntGaindB + self.vehNoisedB
+            V2V_signal[i] = 10 ** (receiver_power_dB / 10)
+            # compute V2I link interference to current V2V link
+            V2I_interference_power_dB = self.power_V2I_dB + self.V2I_V2V_interference_channel_with_fast_dB[
+                RB_i, i, RB_i] + 2 * self.vehAntGaindB + self.vehNoisedB
+            V2V_interference[i] = 10 ** (V2I_interference_power_dB / 10)
+            for k in range(i + 1, self.numDUE):
+                RB_k = RB_selection[k]
+                power_dB_k = power_selection[k]
+                if RB_k == RB_i:
+                    power_i2k = self.power_list_V2V_dB[power_dB_i] + self.V2V_V2V_interference_channel_with_fast_dB[
+                        i, k, RB_i] + 2 * self.vehAntGaindB + self.vehNoisedB
+                    V2V_interference[i] += 10 ** (power_i2k / 10)
+                    power_k2i = self.power_list_V2V_dB[power_dB_k] + self.V2V_V2V_interference_channel_with_fast_dB[
+                        k, i, RB_k] + 2 * self.vehAntGaindB + self.vehNoisedB
+                    V2V_interference[k] += 10 ** (power_k2i / 10)
+        V2V_interference += self.sig2
+        V2V_rate = np.log2(1 + np.divide(V2V_signal, V2V_interference))
+        V2V_rate[self.active_links == 0] = 0  # if a link is in silent mode, it does not transmit any data
+
+        # update demand and time left for each V2V link
+        self.demand -= V2V_rate * self.time_fast_fading * self.bandwidth
+        self.demand[self.demand < 0] = 0
+        self.individual_time_limit -= self.individual_time_limit
+        self.active_links[self.demand <= 0] = 0
+        return np.sum(V2I_rate), np.sum(V2V_rate)
 

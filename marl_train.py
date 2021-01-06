@@ -42,18 +42,18 @@ config_environment = {
     }
 config_agent = {
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    "discount": 0.9,
+    "gamma": 0.9,
     "target_net_update_freq": 1,
     "experience_replay_size": 1000000,
-    "batch_size": 2000,
+    "batch_size": 2048,
     "lr": 1e-3,
-    "lr_decay_step": 500,
+    "lr_decay_step": 100,
     "lr_decay_gamma": 0.95,
     "lr_last_epoch": -1,
-    "n_episode": 12000,
+    "n_episode": 4000,
     "n_step_per_episode": 100,
     "epsilon_final": 0.02,
-    "epsilon_anneal_length": int(10000*0.7)
+    "epsilon_anneal_length": 3000
 }
 # build a torch experiment tracer
 experiment_name = "Discount_0.9"
@@ -84,7 +84,6 @@ for ind_agent in range(config_environment["numDUE"]):
 config_agent["optimizer"] = agents[0].optimizer
 config = dict(config_environment, **config_agent)
 tracer.store(Config(config))
-
 #------------------------- Training -----------------------------
 record_reward = np.zeros(n_episode)
 record_loss = np.zeros(n_episode)
@@ -139,14 +138,13 @@ for i_episode in pbar:
     record_reward[i_episode] = np.mean(episode_reward)
     record_loss[i_episode] = np.mean(episode_loss)
     tracer.log(msg="Episode #{:04d}, TD Loss : {:.3f}".format(i_episode, record_loss[i_episode]), file="loss")
-    tracer.log(msg="Episode #{:04d}, Reward : {:.3f}".format(i_episode, record_loss[i_episode]), file="reward")
+    tracer.log(msg="Episode #{:04d}, Reward : {:.3f}".format(i_episode, record_reward[i_episode]), file="reward")
     pbar.set_description("Loss = {:.3f}, Reward = {:.3f}".format(record_loss[i_episode], record_reward[i_episode]))
-
 
 print('Training Done. Saving models and training statistics')
 for i in range(env.numDUE):
     agent = agents[i]
-    tracer.store(Model(agent.predict_net), file="V2V_{:d}.pth".format(i))
+    tracer.store(Model(agent.predict_net), file="V2V_{:d}".format(i))
 
 # Plot training loss and reward curve
 plt.figure(dpi=300)
@@ -162,8 +160,3 @@ plt.xlabel("Episode")
 plt.ylabel("Reward")
 plt.grid()
 tracer.store(plt.gcf(), "reward.png")
-
-
-
-
-

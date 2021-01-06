@@ -55,7 +55,7 @@ class DQNAgent():
         self.target_net_update_freq = config["target_net_update_freq"]
         self.experience_replay_size = config["experience_replay_size"]
         self.batch_size = config["batch_size"]
-        self.discount = config["discount"]
+        self.gamma = config["gamma"]
 
         self.num_feature = n_Feature
         self.num_action = n_Action
@@ -90,7 +90,7 @@ class DQNAgent():
         batch_state, batch_action, batch_reward, batch_next_state = self.prepare_minibatch()
         current_state_values = self.predict_net(batch_state).gather(1, batch_action).squeeze()
         next_state_values = self.target_net(batch_next_state).max(1)[0].detach()
-        expected_state_action_values = (next_state_values * self.discount) + batch_reward
+        expected_state_action_values = (next_state_values * self.gamma) + batch_reward
         # compute temporal difference as loss
         loss = (expected_state_action_values - current_state_values)**2
         loss = loss.mean()
@@ -98,7 +98,7 @@ class DQNAgent():
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        # self.lr_schduler.step()
+        self.lr_schduler.step()
         # update target network
         if episode // self.target_net_update_freq == 0:
             self.target_net.load_state_dict(self.predict_net.state_dict())
@@ -113,7 +113,7 @@ class DQNAgent():
         current_state_values = self.predict_net(batch_state).gather(1, batch_action).squeeze()
         pred_action = self.predict_net(batch_next_state).argmax(1).unsqueeze(1)
         next_state_values = self.target_net(batch_next_state).gather(1, pred_action).squeeze()
-        expected_state_action_values = (next_state_values * self.discount) + batch_reward
+        expected_state_action_values = (next_state_values * self.gamma) + batch_reward
         # compute temporal difference as loss
         loss = (expected_state_action_values - current_state_values) ** 2
         loss = loss.mean()
