@@ -261,20 +261,20 @@ class RLHighWayEnvironment():
         V2V_interference = np.zeros((self.numDUE, self.numDUE, self.numCUE)) + self.sig2
         for i in range(self.numDUE):
             # if current V2V link has finished its transmission, it then turns to silent mode
-            if not self.active_links[i]:
-                continue
             RB_i = RB_selection[i]
             power_dB_i = power_selection[i]
             V2I_power_dB = self.power_V2I_dB + self.V2I_V2V_interference_channel_with_fast_dB[RB_i, i, RB_i] + 2*self.vehAntGaindB + self.vehNoisedB
             V2V_interference[i, i, RB_i] += 10**(V2I_power_dB/10)
             # interference from other V2V link with the same RB
+            if not self.active_links[i]:
+                continue
             for j in range(i + 1, self.numDUE):
                 RB_j = RB_selection[j]
                 power_dB_j = power_selection[j]
                 if RB_j == RB_i:
-                    power_i2j = self.power_list_V2V_dB[power_dB_i] - self.V2V_V2V_interference_channel_with_fast_dB[i, j, RB_i] + 2*self.vehAntGaindB + self.vehNoisedB
+                    power_i2j = self.power_list_V2V_dB[power_dB_i] + self.V2V_V2V_interference_channel_with_fast_dB[i, j, RB_i] + 2*self.vehAntGaindB + self.vehNoisedB
                     V2V_interference[i, j, RB_i] += 10 ** (power_i2j / 10)
-                    power_j2i = self.power_list_V2V_dB[power_dB_j] - self.V2V_V2V_interference_channel_with_fast_dB[j, i, RB_j] + 2*self.vehAntGaindB + self.vehNoisedB
+                    power_j2i = self.power_list_V2V_dB[power_dB_j] + self.V2V_V2V_interference_channel_with_fast_dB[j, i, RB_j] + 2*self.vehAntGaindB + self.vehNoisedB
                     V2V_interference[j, i, RB_j] += 10 ** (power_j2i / 10)
         # transform inference from linear scale to dB
         self.V2V_interference = 10 * np.log10(V2V_interference)

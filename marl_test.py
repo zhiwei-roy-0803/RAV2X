@@ -38,28 +38,26 @@ config_environment = {
     "bandwidth": int(1e6),
     "demand": int((4 * 190 + 300) * 8 * 2),
     "speed": 70,
-    "lambdda": 0.5
+    "lambdda": 1
     }
 config_agent = {
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     "gamma": 0.9,
     "target_net_update_freq": 1,
     "experience_replay_size": 1000000,
-    "batch_size": 2048,
+    "batch_size": 512,
     "lr": 1e-3,
-    "lr_decay_step": 100,
+    "lr_decay_step": 500,
     "lr_decay_gamma": 0.95,
     "lr_last_epoch": -1,
-    "n_episode": 4000,
+    "n_episode": 1000,
     "n_step_per_episode": 100,
     "epsilon_final": 0.02,
-    "epsilon_anneal_length": 3000
+    "epsilon_anneal_length": int(5000*0.75)
 }
 # build a torch experiment tracer
 experiment_name = "Discount_0.9"
-if os.path.isdir(os.path.join(os.getcwd(), "checkpoints", experiment_name)):
-    shutil.rmtree(os.path.join(os.getcwd(), "checkpoints", experiment_name))
-tracer = Tracer('checkpoints').attach(experiment_name)
+experiment_dir = os.path.join(os.getcwd(), "checkpoints", experiment_name)
 
 # Initialize environment simulator
 env = RLHighWayEnvironment(config_environment)
@@ -76,87 +74,66 @@ n_feature = len(env.get_state(0))
 n_action = numRB * len(config_environment["powerV2VdB"])
 agents = []
 for ind_agent in range(config_environment["numDUE"]):
-    print("Initializing {:s} agent {:d}".format(RL_method, ind_agent))
+    print("Initializing {:s} Agent {:d}".format(RL_method, ind_agent))
     agent = DQNAgent(config_agent, n_Feature=n_feature, n_Action=n_action)
+    agent.predict_net.load_state_dict(torch.load(os.path.join(experiment_dir, "V2V_{:d}.pth".format(ind_agent)), map_location=config_agent["device"])) # load trained agent
     agents.append(agent)
 
 # all optimizer to the global configuration, obtain global configuration and save it in the config.json
 config_agent["optimizer"] = agents[0].optimizer
 config = dict(config_environment, **config_agent)
-tracer.store(Config(config))
-#------------------------- Training -----------------------------
-record_reward = np.zeros(n_episode)
-record_loss = np.zeros(n_episode)
+#------------------------- Evaluation -----------------------------
+record_V2IRate = np.zeros(n_episode)
+record_V2VRate = np.zeros(n_episode)
+record_V2VSuccessRate = np.zeros(n_episode)
 pbar = tqdm(range(n_episode))
 for i_episode in pbar:
-    if i_episode < epsilon_anneal_length:
-        epsilon = 1 - i_episode * (1 - epsilon_final) / (epsilon_anneal_length - 1)  # epsilon decreases over each episode
-    else:
-        epsilon = epsilon_final
     # update the vehicle position after each episode
-    # if i_episode % 1 == 0:
-    #     env.update_vehicle_position() # update vehicle position
-    #     env.update_V2VReceiver() # update the receiver for each V2V link
-    #     env.update_channels_slow() # update channel slow fading
-    #     env.update_channels_fast() # update channel fast fading
-    env.init_simulation()
+    if i_episode % 1 == 0:
+        env.update_vehicle_position() # update vehicle position
+        env.update_V2VReceiver() # update the receiver for each V2V link
+        env.update_channels_slow() # update channel slow fading
+        env.update_channels_fast() # update channel fast fading
     # reset the task buffer for each agent after each episode
     env.demand = env.demand_size * np.ones(numDUE)
     env.individual_time_limit = env.time_slow_fading * np.ones(numDUE)
     env.active_links = np.ones(numDUE, dtype='bool')
-    episode_reward = np.zeros(n_step_per_episode)
-    episode_loss = []
+    episode_V2I_rate = np.zeros(n_step_per_episode)
+    episode_V2V_rate = np.zeros(n_step_per_episode)
     # A episode is a transmission task in 100 ms, V2V agents need to make decision every 1 ms
     for i_step in range(n_step_per_episode):
         state_old_all = []
         action_all = []
         action_all_training = np.zeros([numDUE, 2], dtype='int32')
         for i in range(numDUE):
-            state = env.get_state(i, epsilon, i_episode/(n_episode-1))
+            state = env.get_state(i, epsilon_final, n_episode/(n_episode-1))
             state_old_all.append(state)
-            action = agents[i].get_action(state, epsilon, learned_policy=True)
+            action = agents[i].get_action(state, epsilon=0.0, learned_policy=False) # use learned policy
             action_all.append(action)
             action_all_training[i, 0] = action % numRB  # chosen RB
             action_all_training[i, 1] = action // numRB # power level
         # All agents take actions simultaneously, obtain shared reward, and update the environment.
         action_temp = action_all_training.copy()
-        train_reward = env.compute_reward(action_temp)
-        episode_reward[i_step] = train_reward
+        V2I_rate, V2V_rate = env.compute_rate(action_temp)
+        episode_V2I_rate[i_step] = V2I_rate
+        episode_V2V_rate[i_step] = V2V_rate
         env.update_channels_fast()
         env.compute_V2V_interference(action_temp)
-        for i in range(numDUE):
-            state_old = state_old_all[i]
-            action = action_all[i]
-            state_new = env.get_state(i, epsilon, i_episode/(n_episode-1))
-            agents[i].memory.add(state_old, state_new, train_reward, action)  # add entry to this agent's memory
+    # summary the mean V2I rate and the V2V success rate in this 100 ms transmission task
+    record_V2IRate[i_episode] = np.mean(episode_V2I_rate)
+    record_V2VRate[i_episode] = np.mean(episode_V2V_rate)
+    record_V2VSuccessRate[i_episode] = np.sum(env.active_links == False) / numDUE
+    pbar.set_description("V2I Rate = {:.3f}, V2V Rate = {:.3f}, V2V Success Rate = {:.3f}".format(record_V2IRate[i_episode],
+                                                                                                  record_V2VRate[i_episode],
+                                                                                                  record_V2VSuccessRate[i_episode]))
+print('Evaluation Done. Evaluation Statistics')
+avg_SumV2IRate = np.mean(record_V2IRate)
+avg_SumV2VRate = np.mean(record_V2VRate)
+avg_V2VSuccessRate = np.mean(record_V2VSuccessRate)
+print("Avg V2I Rate = {:.3f} Mbps, Avg Sum V2V Rate = {:.3f} Mbps, Avg V2V Success Rate = {:.6f}".format(
+    avg_SumV2IRate,
+    avg_SumV2VRate,
+    avg_V2VSuccessRate
+))
 
-    # training agents after finishing one episode
-    for i in range(numDUE):
-        loss_val_batch = agents[i].update_double_dqn(i_episode)
-        episode_loss.append(loss_val_batch)
 
-    record_reward[i_episode] = np.mean(episode_reward)
-    record_loss[i_episode] = np.mean(episode_loss)
-    tracer.log(msg="Episode #{:04d}, TD Loss : {:.3f}".format(i_episode, record_loss[i_episode]), file="loss")
-    tracer.log(msg="Episode #{:04d}, Reward : {:.3f}".format(i_episode, record_reward[i_episode]), file="reward")
-    pbar.set_description("Loss = {:.3f}, Reward = {:.3f}".format(record_loss[i_episode], record_reward[i_episode]))
-
-print('Training Done. Saving models and training statistics')
-for i in range(env.numDUE):
-    agent = agents[i]
-    tracer.store(Model(agent.predict_net), file="V2V_{:d}".format(i))
-
-# Plot training loss and reward curve
-plt.figure(dpi=300)
-plt.plot(np.arange(1, n_episode + 1), record_loss, color='r', linestyle='-')
-plt.xlabel("Episode")
-plt.ylabel("TD Error (Loss)")
-plt.grid()
-tracer.store(plt.gcf(), "loss.png")
-
-plt.figure(dpi=300)
-plt.plot(np.arange(1, n_episode + 1), record_reward, color='r', linestyle='-')
-plt.xlabel("Episode")
-plt.ylabel("Reward")
-plt.grid()
-tracer.store(plt.gcf(), "reward.png")
